@@ -1,0 +1,4 @@
+github.com/valinurovam/garagemq v0.0.0-20230728112533-54a6ccf403f9 h1:bCs5VYTBAS5kXHe4EfLFwQqpIHis1m+4qj5xpppWprg=
+github.com/valinurovam/garagemq v0.0.0-20230728112533-54a6ccf403f9/go.mod h1:zq2Rs05WIMCnMEl/c0u9ENOJM40PJnJGVjZqqDOqpqU=
+golang.org/x/crypto v0.4.0 h1:UVQgzMY87xqpKNgb+kDsll2Igd33HszWHFLmpaRMq/8=
+golang.org/x/crypto v0.4.0/go.mod h1:3quD/ATkf6oY+rnes5c3ExXTbLc8mueNue5/DoinL80=

@@ -1,0 +1,20 @@
+#+title: Design
+
+#+begin_src plantuml :file states.png
+[*]-u->Connected: C send-header
+Connected->Starting: S start
+Starting->Started: C start-ok
+Started-->Securing: S secure
+Securing-->Secured: C secure-ok
+Secured-->Tuning: S tune
+Started-->Tuning: S tune
+Tuning-l->Tuned: C tune-ok
+Tuned-l->Opening: C open
+Opening-l->Open: S open-ok
+Open-u->Closing: S/C close
+Closing-u->Closed: C/S close-ok
+Closed-->[*]
+#+end_src
+
+#+RESULTS:
+[[file:states.png]]
