@@ -71,15 +71,14 @@ func (conn *Connection) Start(ctx context.Context) {
 	conn.SendMethod(&method)
 	conn.handleMethod = conn.handleStarting
 
-	thunk := conn.ReadFrame(ctx)
+	thunk, err := conn.ReadFrame(ctx)
 	for {
-		log.Println("Err:", thunk.Err())
-		if err := thunk.Err(); err != nil {
+		if err != nil {
 			amqpError := AMQPError{}
 			if errors.As(err, &amqpError) {
 				// Protocol error.
-				thunk = conn.handleError(ctx, amqpError.amqpErr)
-				if thunk.Err() != nil {
+				thunk, err = conn.handleError(ctx, amqpError.amqpErr)
+				if err != nil {
 					conn.Close()
 					return
 				}
@@ -87,17 +86,17 @@ func (conn *Connection) Start(ctx context.Context) {
 				log.Printf("Error: %v", err)
 			}
 		}
-		if thunk.Done() {
-			break
+		if thunk == nil {
+			conn.Close()
+			log.Println("Finished")
+			return
 		}
-		thunk = thunk.Invoke()
+		thunk, err = thunk()
 	}
-	conn.Close()
-	log.Println("Finished")
 }
 
 func (conn *Connection) SendMethod(method amqp.Method) error {
-	log.Println("<=", method.Name())
+	log.Println("=>", method.Name())
 	err := conn.rawConn.SendMethod(method, 0)
 	if err == ErrCloseAfter {
 		conn.Close()
@@ -105,15 +104,15 @@ func (conn *Connection) SendMethod(method amqp.Method) error {
 	return err
 }
 
-func (conn *Connection) ReadFrame(ctx context.Context) Thunk {
-	thunk := conn.rawConn.ReadFrame(ctx, conn.handleMethod)
-	if err := thunk.Err(); err != nil {
+func (conn *Connection) ReadFrame(ctx context.Context) (thunk, error) {
+	thunk, err := conn.rawConn.ReadFrame(ctx, conn.handleMethod)
+	if err != nil {
 		if err != ErrClosed {
 			err = fmt.Errorf("error reading frame: %w", err)
 		}
 		conn.closeSilent()
 	}
-	return thunk
+	return thunk, err
 }
 
 func (conn *Connection) Close() {
@@ -131,14 +130,14 @@ func (conn *Connection) close() error {
 	return conn.rawConn.Close()
 }
 
-func (conn *Connection) handleStarting(ctx context.Context, method amqp.Method) Thunk {
+func (conn *Connection) handleStarting(ctx context.Context, method amqp.Method) (thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionStartOk:
 
 		var saslData auth.SaslData
 		var err error
 		if saslData, err = auth.ParsePlain(method.Response); err != nil {
-			return Fail(AMQPError{amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())})
+			return nil, AMQPError{amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())}
 		}
 		_ = saslData
 
@@ -159,12 +158,12 @@ func (conn *Connection) handleStarting(ctx context.Context, method amqp.Method) 
 			Heartbeat:  conn.heartbeatInterval,
 		})
 		if err != nil {
-			return Fail(err)
+			return nil, err
 		}
 		conn.handleMethod = conn.handleStarted
 		return conn.ReadFrame(ctx)
 	default:
-		return Fail(unsupported(method))
+		return nil, unsupported(method)
 	}
 }
 
@@ -172,18 +171,18 @@ func unsupported(method amqp.Method) error {
 	return AMQPError{amqp.NewConnectionError(amqp.NotImplemented, fmt.Sprintf("unexpected method %s", method.Name()), method.ClassIdentifier(), method.MethodIdentifier())}
 }
 
-func (conn *Connection) handleStarted(ctx context.Context, method amqp.Method) Thunk {
+func (conn *Connection) handleStarted(ctx context.Context, method amqp.Method) (thunk, error) {
 	// See the state diagram at doc/states.png
 	// In the future, an alternative transition to Securing could be here.
 	conn.handleMethod = conn.handleTuning
 	return conn.handleMethod(ctx, method)
 }
 
-func (conn *Connection) handleTuning(ctx context.Context, method amqp.Method) Thunk {
+func (conn *Connection) handleTuning(ctx context.Context, method amqp.Method) (thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionTuneOk:
 		if method.ChannelMax > maxChannels || method.FrameMax > maxFrameSize {
-			return Fail(errors.New("negotiation failed"))
+			return nil, errors.New("negotiation failed")
 		}
 
 		conn.maxChannels = method.ChannelMax
@@ -199,32 +198,31 @@ func (conn *Connection) handleTuning(ctx context.Context, method amqp.Method) Th
 		conn.handleMethod = conn.handleTuned
 		return conn.ReadFrame(ctx)
 	default:
-		return Fail(unsupported(method))
+		return nil, unsupported(method)
 	}
 }
 
-func (conn *Connection) handleTuned(ctx context.Context, method amqp.Method) Thunk {
+func (conn *Connection) handleTuned(ctx context.Context, method amqp.Method) (thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionOpen:
 		log.Printf("VHost: %s", method.VirtualHost)
 		err := conn.SendMethod(&amqp.ConnectionOpenOk{})
 		if err != nil {
-			return Fail(err)
+			return nil, err
 		}
 		return conn.ReadFrame(ctx)
 	default:
-		log.Println("Unsupported")
 		// TODO(bilus): Extract to HandleMethod.
-		return Fail(unsupported(method))
+		return nil, unsupported(method)
 	}
 }
 
-func (conn *Connection) handleClosing(ctx context.Context, method amqp.Method) Thunk {
+func (conn *Connection) handleClosing(ctx context.Context, method amqp.Method) (thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionCloseOk:
-		return Finish()
+		return nil, nil
 	default:
-		return Fail(unsupported(method))
+		return nil, unsupported(method)
 	}
 }
 
@@ -232,7 +230,7 @@ func (conn *Connection) heartbeatTimeout() uint16 {
 	return conn.heartbeatInterval * 3
 }
 
-func (conn *Connection) handleError(ctx context.Context, amqpErr *amqp.Error) Thunk {
+func (conn *Connection) handleError(ctx context.Context, amqpErr *amqp.Error) (thunk, error) {
 	var err error
 	switch amqpErr.ErrorType {
 	case amqp.ErrorOnChannel:
@@ -256,11 +254,11 @@ func (conn *Connection) handleError(ctx context.Context, amqpErr *amqp.Error) Th
 		err = fmt.Errorf("internal error: no handler for AMQP error type %d", amqpErr.ErrorType)
 	}
 	if err != nil {
-		return Fail(err)
+		return nil, err
 	}
 	return conn.ReadFrame(ctx)
 }
 
-func handleMethodRejectAll(context.Context, amqp.Method) Thunk {
-	return Fail(AMQPError{amqp.NewConnectionError(amqp.FrameError, "unexpected method, connection not started", 0, 0)})
+func handleMethodRejectAll(context.Context, amqp.Method) (thunk, error) {
+	return nil, AMQPError{amqp.NewConnectionError(amqp.FrameError, "unexpected method, connection not started", 0, 0)}
 }
