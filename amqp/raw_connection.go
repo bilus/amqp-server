@@ -62,7 +62,7 @@ func (err AMQPError) Error() string {
 
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
-		input:  input,
+		input:  bufio.NewReaderSize(input, 123<<10),
 		output: output,
 		closer: closer,
 	}
@@ -90,7 +90,6 @@ func (conn *RawConnection) Close() error {
 }
 
 func (conn *RawConnection) SendFrame(frame *amqp.Frame) error {
-	// TODO(bilus): Move to Connection.
 	buffer := bufio.NewWriterSize(conn.output, 128<<10)
 	if err := amqp.WriteFrame(buffer, frame); err != nil && !conn.isClosedError(err) {
 		return fmt.Errorf("error writing frame: %w", err)
@@ -141,8 +140,7 @@ func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) erro
 // It returns error for unrecoverable errors such as errors reading data to signify that the protocol flow
 // cannot be continued and the connection is or must be closed.
 func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler) (thunk, error) {
-	buffer := bufio.NewReaderSize(conn.input, 128<<10)
-	frame, err := amqp.ReadFrame(buffer)
+	frame, err := amqp.ReadFrame(conn.input)
 	if err != nil {
 		if err.Error() == "EOF" && !conn.isClosedError(err) {
 			return nil, fmt.Errorf("error reading frame: %w", err)
@@ -150,16 +148,17 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 			return nil, ErrClosed
 		}
 	}
-	log.Printf("> %v", frame.Type)
 	switch frame.Type {
 	case amqp.FrameHeartbeat:
+		log.Println("Heartbeat")
 		// TODO(bilus): Handle heartbeat.
+		return conn.ReadFrame(ctx, handleMethod)
 	case amqp.FrameMethod:
 		// TODO(bilus): Reuse buffer or use pool.
 		buffer := bytes.NewReader([]byte{})
 		buffer.Reset(frame.Payload)
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
-		log.Printf("Incoming method <- %s", method.Name())
+		log.Printf("<= %s", method.Name())
 		if amqpErr != nil {
 			log.Printf("Error handling frame: %v", amqpErr)
 			return nil, AMQPError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}

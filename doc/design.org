@@ -2,7 +2,22 @@
 
 * TODO Timeout when writing, esp. handleError
 What if client is not reading.
-
+* TODO Handle close sent from client.
+* TODO Preperly handle close close-ok
+Right now, we do send close but there is nil thunk so we never listen for response.
+* TODO Implement heartbeat
+https://github.com/elastic/beats/blob/master/heartbeat/scheduler/scheduler.go
+** TODO Client heartbeat
+Just reset whenever reading anything + handle heartbeat frames.
+#+begin_src go
+if conn.heartbeatTimeout > 0 {
+	if err = conn.netConn.SetReadDeadline(time.Now().Add(time.Duration(conn.heartbeatTimeout) * time.Second)); err != nil {
+		conn.logger.WithError(err).Warn("reading frame")
+		return
+  }
+}
+#+end_src
+** TODO Signal we don't support heartbeat by giving interval = 0 and create a TODO to add it later
 * Connection States
 
 #+begin_src plantuml :file states.png
