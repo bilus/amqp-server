@@ -1,5 +1,7 @@
 #+title: Design
 
+* TODO Implement channel.
+* TODO Write a connect test.
 * TODO Timeout when writing, esp. handleError
 What if client is not reading.
 * TODO Handle close sent from client.

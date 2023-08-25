@@ -37,9 +37,6 @@ type RawConnection struct {
 	closer io.Closer
 }
 
-// thunk is a trampoline thunk.
-type thunk func() (thunk, error)
-
 type (
 	// MethodHandler handles an AMQP method received by the server. It MUST
 	// return an error if any errors occurred during handling of the method. It
@@ -48,7 +45,7 @@ type (
 	// the top-level code to handle the error (e.g. by logging it) but so that
 	// processing continues without closing connection (e.g. to retry an
 	// operation).
-	MethodHandler func(context.Context, amqp.Method) (thunk, error)
+	MethodHandler func(context.Context, amqp.Method) (Thunk, error)
 	ErrorHandler  func(err *amqp.Error) error
 )
 
@@ -139,7 +136,7 @@ func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) erro
 // ReadFrame reads a frame and invokes handleMethod if it's a method or handleError for protocol errors.
 // It returns error for unrecoverable errors such as errors reading data to signify that the protocol flow
 // cannot be continued and the connection is or must be closed.
-func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler) (thunk, error) {
+func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler) (Thunk, error) {
 	frame, err := amqp.ReadFrame(conn.input)
 	if err != nil {
 		if err.Error() == "EOF" && !conn.isClosedError(err) {
@@ -164,7 +161,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 			return nil, AMQPError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}
 		}
 
-		return func() (thunk, error) {
+		return func() (Thunk, error) {
 			return handleMethod(ctx, method)
 		}, nil
 	case amqp.FrameHeader:
