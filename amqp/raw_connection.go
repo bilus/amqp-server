@@ -37,10 +37,28 @@ type RawConnection struct {
 	closer io.Closer
 }
 
+// thunk is a trampoline thunk.
+type thunk func() (thunk, error)
+
 type (
-	MethodHandler func(context.Context, amqp.Method) *amqp.Error
+	// MethodHandler handles an AMQP method received by the server. It MUST
+	// return an error if any errors occurred during handling of the method. It
+	// MAY return a thunk to continue processing (usually a call to ReadFrame)
+	// or nil to close the connection. It MAY return both error and thunk for
+	// the top-level code to handle the error (e.g. by logging it) but so that
+	// processing continues without closing connection (e.g. to retry an
+	// operation).
+	MethodHandler func(context.Context, amqp.Method) (thunk, error)
 	ErrorHandler  func(err *amqp.Error) error
 )
+
+type AMQPError struct {
+	amqpErr *amqp.Error
+}
+
+func (err AMQPError) Error() string {
+	return err.amqpErr.ReplyText
+}
 
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
@@ -122,14 +140,14 @@ func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) erro
 // ReadFrame reads a frame and invokes handleMethod if it's a method or handleError for protocol errors.
 // It returns error for unrecoverable errors such as errors reading data to signify that the protocol flow
 // cannot be continued and the connection is or must be closed.
-func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler, handleError ErrorHandler) error {
+func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler) (thunk, error) {
 	buffer := bufio.NewReaderSize(conn.input, 128<<10)
 	frame, err := amqp.ReadFrame(buffer)
 	if err != nil {
 		if err.Error() == "EOF" && !conn.isClosedError(err) {
-			return fmt.Errorf("error reading frame: %w", err)
+			return nil, fmt.Errorf("error reading frame: %w", err)
 		} else {
-			return ErrClosed
+			return nil, ErrClosed
 		}
 	}
 	log.Printf("> %v", frame.Type)
@@ -144,12 +162,12 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		log.Printf("Incoming method <- %s", method.Name())
 		if amqpErr != nil {
 			log.Printf("Error handling frame: %v", amqpErr)
-			return handleError(amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0))
+			return nil, AMQPError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}
 		}
 
-		if amqpErr := handleMethod(ctx, method); amqpErr != nil {
-			return handleError(amqpErr)
-		}
+		return func() (thunk, error) {
+			return handleMethod(ctx, method)
+		}, nil
 	case amqp.FrameHeader:
 		// if err := channel.handleContentHeader(frame); err != nil {
 		// 	channel.sendError(err)
@@ -159,5 +177,5 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		// 	channel.sendError(err)
 		// }
 	}
-	return nil
+	return nil, nil
 }

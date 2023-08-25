@@ -1,5 +1,10 @@
 #+title: Design
 
+* TODO Timeout when writing, esp. handleError
+What if client is not reading.
+
+* Connection States
+
 #+begin_src plantuml :file states.png
 [*]-u->Connected: C send-header
 Connected->Starting: S start
