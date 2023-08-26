@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/valinurovam/garagemq/amqp"
@@ -21,7 +22,9 @@ type Connection struct {
 	maxChannels       uint16
 	maxFrameSize      uint32
 
-	// TODO(bilus): Track channel open/closed state using roaring bitmap.
+	dead int32
+
+	// TODO(bilus): Idea for later: track channel open/closed state using roaring bitmap.
 }
 
 const (
@@ -46,6 +49,8 @@ func NewConnection(input io.Reader, output io.Writer, closer io.Closer) *Connect
 }
 
 func (conn *Connection) Do(ctx context.Context) {
+	defer conn.die()
+
 	err := conn.rawConn.ReadAmqpHeader()
 	if err != nil {
 		conn.Close()
@@ -248,6 +253,14 @@ func (conn *Connection) handleOpen(ctx context.Context, channelID ChannelID, met
 	}
 }
 
+func (conn *Connection) die() {
+	atomic.StoreInt32(&conn.dead, 1)
+}
+
+func (conn *Connection) isDead() bool {
+	return atomic.LoadInt32(&conn.dead) != 0
+}
+
 func (conn *Connection) handleClosing(ctx context.Context, channelID ChannelID, method amqp.Method) (Thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionCloseOk:
@@ -295,6 +308,9 @@ func (conn *Connection) heartbeat() {
 	interval := time.Duration(conn.heartbeatInterval) * time.Second
 	intervalMilli := interval.Milliseconds()
 	for {
+		if conn.isDead() {
+			return
+		}
 		timeLeft := intervalMilli - time.Now().UnixMilli() - conn.rawConn.LastWriteUnixMilli()
 		if timeLeft <= 0 {
 			if err := conn.rawConn.Heartbeat(); err != nil {
