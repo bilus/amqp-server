@@ -9,12 +9,19 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/free/concurrent-writer/concurrent"
 	"github.com/valinurovam/garagemq/amqp"
 )
+
+// Experimenting.
+type bufferedWriter = bufio.Writer
+
+func newBufferedWriter(w io.Writer, size int) *bufferedWriter {
+	return bufio.NewWriterSize(w, size)
+}
 
 // From https://github.com/rabbitmq/rabbitmq-common/blob/master/src/rabbit_writer.erl
 // When the amount of protocol method data buffered exceeds
@@ -35,10 +42,12 @@ var (
 // RawConnection implements basic methods for sending and receiving and parsing frames.
 type RawConnection struct {
 	input  io.Reader
-	output *concurrent.Writer
+	output *bufferedWriter
 	closer io.Closer
 
 	lastWriteUnixMilli int64
+
+	writeMtx sync.Mutex
 }
 
 type (
@@ -66,7 +75,7 @@ func (err AmqpError) Error() string {
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
 		input:  bufio.NewReaderSize(input, 123<<10),
-		output: concurrent.NewWriterSize(output, 128<<10),
+		output: newBufferedWriter(output, 128<<10),
 		closer: closer,
 	}
 	return conn
@@ -172,6 +181,9 @@ func (conn *RawConnection) Heartbeat() error {
 }
 
 func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
+	conn.writeMtx.Lock()
+	defer conn.writeMtx.Unlock()
+
 	if err := amqp.WriteFrame(conn.output, frame); err != nil && !conn.isClosedError(err) {
 		return fmt.Errorf("error writing frame: %w", err)
 	}
@@ -203,7 +215,7 @@ func (conn *RawConnection) isClosedError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "use of closed network connection")
 }
 
-func (conn *RawConnection) maybeFlush(buffer *concurrent.Writer) error {
+func (conn *RawConnection) maybeFlush(buffer *bufferedWriter) error {
 	if buffer.Buffered() >= flushThreshold {
 		return buffer.Flush()
 	}

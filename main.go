@@ -21,7 +21,7 @@ func main() {
 type Server struct{}
 
 func (s *Server) Start(ctx context.Context) error {
-	address := "localhost:5672"
+	address := ":5673"
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", address)
 	if err != nil {
 		return err

@@ -1,4 +1,11 @@
 #+title: Design
+* Load-testing
+** 3cae601c-4414-11ee-8f95-aa665a14436d
+** c0b1697c-4414-11ee-a1da-aa665a14436d
+** 5cd63120-4415-11ee-80b3-aa665a14436d
+** 55a07af4-4416-11ee-b641-aa665a14436d
+** d6a079e2-4416-11ee-a515-aa665a14436d
+** 4e33f60a-4417-11ee-b823-aa665a14436d
 
 * DONE Implement channel.
 * DONE Fix: error reading frame EOF
@@ -28,6 +35,8 @@ if conn.heartbeatTimeout > 0 {
 }
 #+end_src
 * TODO Signal 503 if heartbeat etc. received on non-zero chan.
+* Polling writer
+https://github.com/rs/zerolog/blob/master/diode/diode.go
 * Connection States
 
 #+begin_src plantuml :file states.png
