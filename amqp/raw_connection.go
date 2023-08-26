@@ -25,18 +25,20 @@ const flushThreshold = 1414
 const protoVersion = "amqp-rabbit"
 
 var (
-	ErrCloseAfter = errors.New("close-after frame")
-	ErrClosed     = errors.New("EOF")
+	ErrCloseAfter   = errors.New("closing after writing last frame")
+	ErrClientClosed = errors.New("EOF")
 )
 
 // RawConnection implements basic methods for sending and receiving and parsing frames.
 type RawConnection struct {
 	input  io.Reader
-	output io.Writer
+	output *bufio.Writer
 	closer io.Closer
 }
 
 type (
+	ChannelID = uint16
+
 	// MethodHandler handles an AMQP method received by the server. It MUST
 	// return an error if any errors occurred during handling of the method. It
 	// MAY return a thunk to continue processing (usually a call to ReadFrame)
@@ -44,7 +46,7 @@ type (
 	// the top-level code to handle the error (e.g. by logging it) but so that
 	// processing continues without closing connection (e.g. to retry an
 	// operation).
-	MethodHandler func(context.Context, amqp.Method) (Thunk, error)
+	MethodHandler func(context.Context, ChannelID, amqp.Method) (Thunk, error)
 	ErrorHandler  func(err *amqp.Error) error
 )
 
@@ -59,7 +61,7 @@ func (err AmqpError) Error() string {
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
 		input:  bufio.NewReaderSize(input, 123<<10),
-		output: output,
+		output: bufio.NewWriterSize(output, 128<<10),
 		closer: closer,
 	}
 	return conn
@@ -89,6 +91,11 @@ func (conn *RawConnection) Close() error {
 	return conn.closer.Close()
 }
 
+// Flush writes out buffer to output.
+func (conn *RawConnection) Flush() error {
+	return conn.output.Flush()
+}
+
 // SendMethod sends AMQP method to the client.
 func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) error {
 	log.Println("=>", method.Name())
@@ -113,10 +120,10 @@ func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) erro
 func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHandler) (Thunk, error) {
 	frame, err := amqp.ReadFrame(conn.input)
 	if err != nil {
-		if err.Error() == "EOF" && !conn.isClosedError(err) {
+		if err.Error() != "EOF" && !conn.isClosedError(err) {
 			return nil, fmt.Errorf("error reading frame: %w", err)
 		} else {
-			return nil, ErrClosed
+			return nil, ErrClientClosed
 		}
 	}
 	switch frame.Type {
@@ -136,7 +143,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		}
 
 		return func() (Thunk, error) {
-			return handleMethod(ctx, method)
+			return handleMethod(ctx, frame.ChannelID, method)
 		}, nil
 	case amqp.FrameHeader:
 		// if err := channel.handleContentHeader(frame); err != nil {
@@ -151,22 +158,21 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 }
 
 func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
-	buffer := bufio.NewWriterSize(conn.output, 128<<10)
-	if err := amqp.WriteFrame(buffer, frame); err != nil && !conn.isClosedError(err) {
+	if err := amqp.WriteFrame(conn.output, frame); err != nil && !conn.isClosedError(err) {
 		return fmt.Errorf("error writing frame: %w", err)
 	}
 	if frame.CloseAfter {
-		if err := buffer.Flush(); err != nil && !conn.isClosedError(err) {
+		if err := conn.output.Flush(); err != nil && !conn.isClosedError(err) {
 			return fmt.Errorf("error writing frame: %w", err)
 		}
 		return ErrCloseAfter
 	}
 	if frame.Sync {
-		if err := buffer.Flush(); err != nil && !conn.isClosedError(err) {
+		if err := conn.output.Flush(); err != nil && !conn.isClosedError(err) {
 			return fmt.Errorf("error writing frame: %w", err)
 		}
 	} else {
-		if err := conn.maybeFlush(buffer); err != nil && !conn.isClosedError(err) {
+		if err := conn.maybeFlush(conn.output); err != nil && !conn.isClosedError(err) {
 			return fmt.Errorf("error writing frame: %w", err)
 		}
 	}

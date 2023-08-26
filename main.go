@@ -45,6 +45,6 @@ func (s *Server) Start(ctx context.Context) error {
 		netConn.SetNoDelay(false)
 
 		conn := amqp.NewConnection(netConn, netConn, netConn)
-		conn.Start(ctx)
+		go conn.Do(ctx)
 	}
 }

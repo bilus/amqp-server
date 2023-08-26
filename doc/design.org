@@ -1,6 +1,10 @@
 #+title: Design
 
-* TODO Implement channel.
+* DONE Implement channel.
+* DONE Fix: error reading frame EOF
+* TODO Fix: client unexpectedly closed connection
+It is a timeout. Need to add heartbeats after all.
+* TODO Clean up states in the diagram (mark intermediate states such as Started)
 * TODO Write a connect test.
 * TODO Timeout when writing, esp. handleError
 What if client is not reading.
@@ -20,6 +24,7 @@ if conn.heartbeatTimeout > 0 {
 }
 #+end_src
 ** TODO Signal we don't support heartbeat by giving interval = 0 and create a TODO to add it later
+* TODO Signal 503 if heartbeat etc. received on non-zero chan.
 * Connection States
 
 #+begin_src plantuml :file states.png
