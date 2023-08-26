@@ -2,17 +2,21 @@
 
 * DONE Implement channel.
 * DONE Fix: error reading frame EOF
-* TODO Fix: client unexpectedly closed connection
+* DONE Preperly handle close close-ok
+Right now, we do send close but there is nil thunk so we never listen for response.
+* DONE Handle close sent from client.
+* DONE Fix: client unexpectedly closed connection
 It is a timeout. Need to add heartbeats after all.
+* DONE Implement a minimal heartbeat using a separate go routine
 * TODO Clean up states in the diagram (mark intermediate states such as Started)
 * TODO Write a connect test.
 * TODO Timeout when writing, esp. handleError
 What if client is not reading.
-* TODO Handle close sent from client.
-* TODO Preperly handle close close-ok
-Right now, we do send close but there is nil thunk so we never listen for response.
-* TODO Implement heartbeat
+* TODO Implement heartbeat without a separate go routine for each connection
 https://github.com/elastic/beats/blob/master/heartbeat/scheduler/scheduler.go
+- epoll
+- lock-free priority queue
+- lock-free skip list
 ** TODO Client heartbeat
 Just reset whenever reading anything + handle heartbeat frames.
 #+begin_src go
@@ -23,7 +27,6 @@ if conn.heartbeatTimeout > 0 {
   }
 }
 #+end_src
-** TODO Signal we don't support heartbeat by giving interval = 0 and create a TODO to add it later
 * TODO Signal 503 if heartbeat etc. received on non-zero chan.
 * Connection States
 

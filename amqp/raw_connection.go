@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/valinurovam/garagemq/amqp"
 )
@@ -34,6 +36,8 @@ type RawConnection struct {
 	input  io.Reader
 	output *bufio.Writer
 	closer io.Closer
+
+	lastWriteUnixMilli int64
 }
 
 type (
@@ -128,11 +132,14 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 	}
 	switch frame.Type {
 	case amqp.FrameHeartbeat:
-		log.Println("Heartbeat")
-		// TODO(bilus): Handle heartbeat.
+		log.Println("=>Heartbeat")
+		// TODO(bilus): Handle client heartbeat.
 		return conn.ReadFrame(ctx, handleMethod)
 	case amqp.FrameMethod:
-		// TODO(bilus): Reuse buffer or use pool.
+		// TODO(bilus): Reuse buffer or use pool. Though most active connections
+		// will spend most time waiting for data from client so the pool would
+		// grow large anyway and I'm unsure how much we'd gain, esp. as the number
+		// of active connections drops.
 		buffer := bytes.NewReader([]byte{})
 		buffer.Reset(frame.Payload)
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
@@ -157,6 +164,12 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 	return nil, nil
 }
 
+func (conn *RawConnection) Heartbeat() error {
+	log.Println("<= Heartbeat")
+	heartbeatFrame := &amqp.Frame{Type: byte(amqp.FrameHeartbeat), ChannelID: 0, Payload: []byte{}, CloseAfter: false, Sync: true}
+	return conn.sendFrame(heartbeatFrame)
+}
+
 func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
 	if err := amqp.WriteFrame(conn.output, frame); err != nil && !conn.isClosedError(err) {
 		return fmt.Errorf("error writing frame: %w", err)
@@ -176,7 +189,12 @@ func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
 			return fmt.Errorf("error writing frame: %w", err)
 		}
 	}
+	atomic.StoreInt64(&conn.lastWriteUnixMilli, time.Now().UnixMilli())
 	return nil
+}
+
+func (conn *RawConnection) LastWriteUnixMilli() int64 {
+	return atomic.LoadInt64(&conn.lastWriteUnixMilli)
 }
 
 func (conn *RawConnection) isClosedError(err error) bool {

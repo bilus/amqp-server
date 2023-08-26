@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/valinurovam/garagemq/amqp"
 	"github.com/valinurovam/garagemq/auth"
@@ -26,7 +27,7 @@ type Connection struct {
 const (
 	maxChannels              = 1
 	maxFrameSize             = 65536
-	defaultHeartbeatInterval = 0 // TODO(bilus): Implement heartbeat.
+	defaultHeartbeatInterval = 10
 
 	// controlChannelID MUST be zero for all heartbeat frames, and for method,
 	// header and body frames that refer to the Connection class. A peer that
@@ -204,8 +205,7 @@ func (conn *Connection) handleTuning(ctx context.Context, channelID ChannelID, m
 			if method.Heartbeat < conn.heartbeatInterval {
 				conn.heartbeatInterval = method.Heartbeat
 			}
-			// TODO(bilus): Implement heartbeats. Do we need a channel?
-			// go conn.heartbeat()
+			go conn.heartbeat()
 		}
 		return conn.ReadFrame(ctx, conn.handleTuned)
 	default:
@@ -257,10 +257,6 @@ func (conn *Connection) handleClosing(ctx context.Context, channelID ChannelID, 
 	}
 }
 
-func (conn *Connection) heartbeatTimeout() uint16 {
-	return conn.heartbeatInterval * 3
-}
-
 func (conn *Connection) handleError(ctx context.Context, channelID ChannelID, amqpErr *amqp.Error) (Thunk, error) {
 	var err error
 	var handleMethod MethodHandler
@@ -293,4 +289,20 @@ func (conn *Connection) handleError(ctx context.Context, channelID ChannelID, am
 
 func handleMethodRejectAll(_ context.Context, _ ChannelID, method amqp.Method) (Thunk, error) {
 	return nil, unsupported(method)
+}
+
+func (conn *Connection) heartbeat() {
+	interval := time.Duration(conn.heartbeatInterval) * time.Second
+	intervalMilli := interval.Milliseconds()
+	for {
+		timeLeft := intervalMilli - time.Now().UnixMilli() - conn.rawConn.LastWriteUnixMilli()
+		if timeLeft <= 0 {
+			if err := conn.rawConn.Heartbeat(); err != nil {
+				return
+			}
+			time.Sleep(interval)
+		} else {
+			time.Sleep(time.Duration(timeLeft) * time.Millisecond)
+		}
+	}
 }
