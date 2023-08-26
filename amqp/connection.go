@@ -86,7 +86,7 @@ func (conn *Connection) Do(ctx context.Context) {
 	thunk, err := conn.ReadFrame(ctx, conn.handleStarting)
 	for {
 		if err != nil {
-			amqpError := AmqpError{}
+			amqpError := amqpError{}
 			if errors.As(err, &amqpError) {
 				// Protocol error.
 				thunk, err = conn.handleError(ctx, controlChannelID, amqpError.amqpErr)
@@ -157,7 +157,7 @@ func (conn *Connection) handleStarting(ctx context.Context, channelID ChannelID,
 		var saslData auth.SaslData
 		var err error
 		if saslData, err = auth.ParsePlain(method.Response); err != nil {
-			return nil, AmqpError{amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())}
+			return nil, amqpError{amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())}
 		}
 		_ = saslData
 
@@ -180,20 +180,14 @@ func (conn *Connection) handleStarting(ctx context.Context, channelID ChannelID,
 		if err != nil {
 			return nil, err
 		}
-		return conn.ReadFrame(ctx, conn.handleStarted)
+		return conn.ReadFrame(ctx, conn.handleTuning)
 	default:
 		return nil, unsupported(method)
 	}
 }
 
 func unsupported(method amqp.Method) error {
-	return AmqpError{amqp.NewConnectionError(amqp.NotImplemented, fmt.Sprintf("unexpected method %s", method.Name()), method.ClassIdentifier(), method.MethodIdentifier())}
-}
-
-func (conn *Connection) handleStarted(ctx context.Context, channelID ChannelID, method amqp.Method) (Thunk, error) {
-	// See the state diagram at doc/states.png
-	// In the future, an alternative transition to Securing could be here.
-	return conn.handleTuning(ctx, channelID, method)
+	return amqpError{amqp.NewConnectionError(amqp.NotImplemented, fmt.Sprintf("unexpected method %s", method.Name()), method.ClassIdentifier(), method.MethodIdentifier())}
 }
 
 func (conn *Connection) handleTuning(ctx context.Context, channelID ChannelID, method amqp.Method) (Thunk, error) {
@@ -254,7 +248,7 @@ func (conn *Connection) handleOpen(ctx context.Context, channelID ChannelID, met
 			return func() (Thunk, error) {
 					return conn.ReadFrame(ctx, conn.handleOpen)
 				},
-				AmqpError{amqp.NewChannelError(
+				amqpError{amqp.NewChannelError(
 					amqp.PreconditionFailed,
 					"unsupported queue configuration",
 					method.ClassIdentifier(),

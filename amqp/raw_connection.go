@@ -64,14 +64,15 @@ type (
 	ErrorHandler  func(err *amqp.Error) error
 )
 
-type AmqpError struct {
+type amqpError struct {
 	amqpErr *amqp.Error
 }
 
-func (err AmqpError) Error() string {
+func (err amqpError) Error() string {
 	return err.amqpErr.ReplyText
 }
 
+// NewRawConnection creates a new connection.
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
 		input:  bufio.NewReaderSize(input, 123<<10),
@@ -155,8 +156,9 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
 		log.Printf("<= %s", method.Name())
 		if amqpErr != nil {
+			// TODO(bilus): It can either be a connection or channel error.
 			log.Printf("Error handling frame: %v", amqpErr)
-			return nil, AmqpError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}
+			return nil, amqpError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}
 		}
 
 		return func() (Thunk, error) {
@@ -174,6 +176,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 	return nil, nil
 }
 
+// Heartbeat sends a heartbeat frame.
 func (conn *RawConnection) Heartbeat() error {
 	log.Println("<= Heartbeat")
 	heartbeatFrame := &amqp.Frame{Type: byte(amqp.FrameHeartbeat), ChannelID: 0, Payload: []byte{}, CloseAfter: false, Sync: true}
@@ -206,6 +209,7 @@ func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
 	return nil
 }
 
+// LastWriteUnixMilli Posix time of the last write in ms.
 func (conn *RawConnection) LastWriteUnixMilli() int64 {
 	return atomic.LoadInt64(&conn.lastWriteUnixMilli)
 }

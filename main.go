@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/bilus/amqp-server/amqp"
 	"context"
 	"log"
 	"net"
+
+	"github.com/bilus/amqp-server/amqp"
 )
 
 // Step 1. Have it accept connections.
