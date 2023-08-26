@@ -210,6 +210,7 @@ func (conn *Connection) handleTuning(ctx context.Context, channelID ChannelID, m
 			if method.Heartbeat < conn.heartbeatInterval {
 				conn.heartbeatInterval = method.Heartbeat
 			}
+			// TODO(bilus): Replace with a lock-free priority queue or similar instead of using up an extra go routine per connection.
 			go conn.heartbeat()
 		}
 		return conn.ReadFrame(ctx, conn.handleTuned)
