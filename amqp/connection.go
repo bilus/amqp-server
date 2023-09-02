@@ -280,7 +280,7 @@ func (conn *Connection) die() {
 	atomic.StoreInt32(&conn.dead, 1)
 }
 
-func (conn *Connection) isDead() bool {
+func (conn *Connection) IsDead() bool {
 	return atomic.LoadInt32(&conn.dead) != 0
 }
 
@@ -331,7 +331,7 @@ func (conn *Connection) heartbeat() {
 	interval := time.Duration(conn.heartbeatInterval) * time.Second
 	intervalMilli := interval.Milliseconds()
 	for {
-		if conn.isDead() {
+		if conn.IsDead() {
 			return
 		}
 		timeLeft := intervalMilli - time.Now().UnixMilli() - conn.rawConn.LastWriteUnixMilli()
