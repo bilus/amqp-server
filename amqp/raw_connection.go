@@ -113,7 +113,7 @@ func (conn *RawConnection) Flush() error {
 
 // SendMethod sends AMQP method to the client.
 func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) error {
-	log.Println("=>", method.Name())
+	log.Printf("=> %s chan = %d", method.Name(), channelId)
 	// TODO(bilus): Use buffer pool (after benchmarking).
 	buffer := bytes.NewBuffer(make([]byte, 0, 0))
 	if err := amqp.WriteMethod(buffer, method, protoVersion); err != nil {
@@ -154,7 +154,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		buffer := bytes.NewReader([]byte{})
 		buffer.Reset(frame.Payload)
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
-		log.Printf("<= %s", method.Name())
+		log.Printf("<= %s chan = %d", method.Name(), frame.ChannelID)
 		if amqpErr != nil {
 			// TODO(bilus): It can either be a connection or channel error.
 			log.Printf("Error handling frame: %v", amqpErr)

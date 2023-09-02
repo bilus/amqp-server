@@ -236,6 +236,12 @@ func (conn *Connection) handleOpen(ctx context.Context, channelID ChannelID, met
 			return nil, err
 		}
 		return conn.ReadFrame(ctx, conn.handleOpen)
+	case *amqp.ChannelClose:
+		err := conn.SendMethod(&amqp.ChannelCloseOk{}, channelID)
+		if err != nil {
+			return nil, err
+		}
+		return conn.ReadFrame(ctx, conn.handleOpen)
 	case *amqp.ConnectionClose:
 		err := conn.SendMethod(&amqp.ConnectionCloseOk{}, channelID)
 		if err != nil {
