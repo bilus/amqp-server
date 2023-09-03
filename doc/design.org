@@ -17,7 +17,7 @@ Right now, we do send close but there is nil thunk so we never listen for respon
 * DONE Fix: client unexpectedly closed connection
 It is a timeout. Need to add heartbeats after all.
 * DONE Implement a minimal heartbeat using a separate go routine
-* TODO Write a connect test.
+* DONE Write a connect test.
 * TODO Timeout when writing, esp. handleError
 What if client is not reading.
 * TODO Implement heartbeat without a separate go routine for each connection
@@ -37,6 +37,8 @@ if conn.heartbeatTimeout > 0 {
 #+end_src
 * TODO Clean up states in the diagram (mark intermediate states such as Started)
 * TODO Signal 503 if heartbeat etc. received on non-zero chan.
+* TODO Wildcards
+https://github.com/leandro-lugaresi/hub/blob/main/matching_cstrie.go#L190
 * Polling writer
 https://github.com/rs/zerolog/blob/master/diode/diode.go
 * Connection States

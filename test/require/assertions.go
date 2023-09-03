@@ -48,5 +48,12 @@ func (require *Assertions) OpenConnection(ctx context.Context, heartbeat time.Du
 	clientConn, err := rabbitmq.Open(readWriteCloser{rc, wc, wc}, config)
 	require.NoError(err)
 
+	// Automatically clean up.
+	go func() {
+		<-ctx.Done()
+		clientConn.Close()
+		serverConn.Close()
+	}()
+
 	return clientConn, serverConn
 }

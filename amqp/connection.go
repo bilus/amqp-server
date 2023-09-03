@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lithammer/shortuuid/v4"
 	"github.com/valinurovam/garagemq/amqp"
 	"github.com/valinurovam/garagemq/auth"
 )
@@ -19,12 +20,11 @@ import (
 type Connection struct {
 	rawConn           *RawConnection
 	heartbeatInterval uint16
-	maxChannels       uint16
+	maxChannels       uint16 // Future use, currently 1 chan max.
 	maxFrameSize      uint32
 
-	dead int32
-
-	// TODO(bilus): Idea for later: track channel open/closed state using roaring bitmap.
+	dead          int32
+	declaredQueue string // Only one queue supported. Empty if not declared.
 }
 
 const (
@@ -89,10 +89,9 @@ func (conn *Connection) Do(ctx context.Context) {
 			amqpError := amqpError{}
 			if errors.As(err, &amqpError) {
 				// Protocol error.
-				thunk, err = conn.handleError(ctx, controlChannelID, amqpError.amqpErr)
+				thunk, err = conn.handleError(ctx, amqpError.ChannelID, amqpError.amqpErr)
 				if err != nil {
-					conn.Close()
-					return
+					log.Printf("Error on chanel %d: %v", amqpError.ChannelID, err)
 				}
 			} else if err == ErrCloseAfter {
 				conn.flushAndClose()
@@ -157,7 +156,7 @@ func (conn *Connection) handleStarting(ctx context.Context, channelID ChannelID,
 		var saslData auth.SaslData
 		var err error
 		if saslData, err = auth.ParsePlain(method.Response); err != nil {
-			return nil, amqpError{amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())}
+			return nil, connectionError(amqp.NotAllowed, "login failure", method)
 		}
 		_ = saslData
 
@@ -187,7 +186,7 @@ func (conn *Connection) handleStarting(ctx context.Context, channelID ChannelID,
 }
 
 func unsupported(method amqp.Method) error {
-	return amqpError{amqp.NewConnectionError(amqp.NotImplemented, fmt.Sprintf("unexpected method %s", method.Name()), method.ClassIdentifier(), method.MethodIdentifier())}
+	return connectionError(amqp.NotImplemented, fmt.Sprintf("unexpected method %s", method.Name()), method)
 }
 
 func (conn *Connection) handleTuning(ctx context.Context, channelID ChannelID, method amqp.Method) (Thunk, error) {
@@ -242,6 +241,8 @@ func (conn *Connection) handleOpen(ctx context.Context, channelID ChannelID, met
 			return nil, err
 		}
 		return conn.ReadFrame(ctx, conn.handleOpen)
+	case *amqp.ChannelCloseOk:
+		return conn.ReadFrame(ctx, conn.handleOpen)
 	case *amqp.ConnectionClose:
 		err := conn.SendMethod(&amqp.ConnectionCloseOk{}, channelID)
 		if err != nil {
@@ -254,22 +255,47 @@ func (conn *Connection) handleOpen(ctx context.Context, channelID ChannelID, met
 			return func() (Thunk, error) {
 					return conn.ReadFrame(ctx, conn.handleOpen)
 				},
-				amqpError{amqp.NewChannelError(
-					amqp.PreconditionFailed,
-					"unsupported queue configuration",
-					method.ClassIdentifier(),
-					method.MethodIdentifier(),
-				)}
+				channelError(channelID, amqp.PreconditionFailed, "unsupported queue configuration", method)
 		}
+		if conn.declaredQueue != "" {
+			return func() (Thunk, error) {
+					return conn.ReadFrame(ctx, conn.handleOpen)
+				},
+				channelError(channelID, amqp.PreconditionFailed, "only one queue per connection is allowed", method)
+		}
+
+		conn.declaredQueue = shortuuid.New()
 		ok := amqp.QueueDeclareOk{
-			Queue: "TODO",
+			Queue: conn.declaredQueue,
 		}
+
 		err := conn.SendMethod(&ok, channelID)
 		if err != nil {
 			return nil, err
 		}
 		return conn.ReadFrame(ctx, conn.handleOpen)
+	case *amqp.QueueDelete:
+		if conn.declaredQueue == "" || conn.declaredQueue != method.Queue {
+			return func() (Thunk, error) {
+					return conn.ReadFrame(ctx, conn.handleOpen)
+				},
+				channelError(channelID, amqp.PreconditionFailed, "no such queue", method)
+		}
+		conn.declaredQueue = ""
+
+		err := conn.SendMethod(&amqp.QueueDeleteOk{}, channelID)
+		if err != nil {
+			return nil, err
+		}
+		return conn.ReadFrame(ctx, conn.handleOpen)
+
 	case *amqp.QueueBind:
+		if conn.declaredQueue == "" || conn.declaredQueue != method.Queue {
+			return func() (Thunk, error) {
+					return conn.ReadFrame(ctx, conn.handleOpen)
+				},
+				channelError(channelID, amqp.PreconditionFailed, "no such queue", method)
+		}
 		err := conn.SendMethod(&amqp.QueueBindOk{}, channelID)
 		if err != nil {
 			return nil, err
@@ -286,6 +312,7 @@ func (conn *Connection) die() {
 	atomic.StoreInt32(&conn.dead, 1)
 }
 
+// IsDead returns true if connection is closed.
 func (conn *Connection) IsDead() bool {
 	return atomic.LoadInt32(&conn.dead) != 0
 }
@@ -304,8 +331,7 @@ func (conn *Connection) handleError(ctx context.Context, channelID ChannelID, am
 	var handleMethod MethodHandler
 	switch amqpErr.ErrorType {
 	case amqp.ErrorOnChannel:
-		// TODO(bilus): This is temporary. Figure out channels next.
-		handleMethod = handleMethodRejectAll
+		handleMethod = conn.handleOpen
 		err = conn.SendMethod(&amqp.ChannelClose{
 			ReplyCode: amqpErr.ReplyCode,
 			ReplyText: amqpErr.ReplyText,
@@ -319,14 +345,13 @@ func (conn *Connection) handleError(ctx context.Context, channelID ChannelID, am
 			ReplyText: amqpErr.ReplyText,
 			ClassID:   amqpErr.ClassID,
 			MethodID:  amqpErr.MethodID,
-		}, channelID)
+		}, 0)
 	default:
 		err = fmt.Errorf("internal error: no handler for AMQP error type %d", amqpErr.ErrorType)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return conn.ReadFrame(ctx, handleMethod)
+	return func() (Thunk, error) {
+		return conn.ReadFrame(ctx, handleMethod)
+	}, err
 }
 
 func handleMethodRejectAll(_ context.Context, _ ChannelID, method amqp.Method) (Thunk, error) {
