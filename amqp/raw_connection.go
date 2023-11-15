@@ -64,14 +64,6 @@ type (
 	ErrorHandler  func(err *amqp.Error) error
 )
 
-type amqpError struct {
-	amqpErr *amqp.Error
-}
-
-func (err amqpError) Error() string {
-	return err.amqpErr.ReplyText
-}
-
 // NewRawConnection creates a new connection.
 func NewRawConnection(input io.Reader, output io.Writer, closer io.Closer) *RawConnection {
 	conn := &RawConnection{
@@ -113,7 +105,7 @@ func (conn *RawConnection) Flush() error {
 
 // SendMethod sends AMQP method to the client.
 func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) error {
-	log.Println("=>", method.Name())
+	log.Printf("<= %s chan = %d", method.Name(), channelId)
 	// TODO(bilus): Use buffer pool (after benchmarking).
 	buffer := bytes.NewBuffer(make([]byte, 0, 0))
 	if err := amqp.WriteMethod(buffer, method, protoVersion); err != nil {
@@ -154,11 +146,11 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		buffer := bytes.NewReader([]byte{})
 		buffer.Reset(frame.Payload)
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
-		log.Printf("<= %s", method.Name())
+		log.Printf("=> %s chan = %d", method.Name(), frame.ChannelID)
 		if amqpErr != nil {
 			// TODO(bilus): It can either be a connection or channel error.
 			log.Printf("Error handling frame: %v", amqpErr)
-			return nil, amqpError{amqp.NewConnectionError(amqp.FrameError, amqpErr.Error(), 0, 0)}
+			return nil, connectionError(amqp.FrameError, amqpErr.Error(), nil)
 		}
 
 		return func() (Thunk, error) {
