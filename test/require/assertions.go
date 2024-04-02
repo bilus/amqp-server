@@ -22,6 +22,11 @@ type readWriteCloser struct {
 	io.Closer
 }
 
+type AMQPServer struct {
+	require *Assertions
+	users   []amqp.User
+}
+
 func New(t *testing.T) *Assertions {
 	return &Assertions{
 		require.New(t),
@@ -29,24 +34,60 @@ func New(t *testing.T) *Assertions {
 }
 
 func (require *Assertions) OpenConnection(ctx context.Context, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection) {
+	server := require.AMQPServer(ctx)
+	clientConn, serverConn, err := server.Connect(ctx, "amqp://localhost/", heartbeat)
+	require.NoError(err)
+	return clientConn, serverConn
+}
+
+func (require *Assertions) AMQPServer(ctx context.Context, credentials ...string) AMQPServer {
+	if len(credentials) == 0 {
+		return AMQPServer{require, nil}
+	}
+	require.Len(credentials, 2)
+	username := credentials[0]
+	password := credentials[1]
+	return AMQPServer{
+		require, []amqp.User{
+			{
+				Username: username,
+				Password: password,
+			},
+		},
+	}
+}
+
+func (server AMQPServer) Connect(ctx context.Context, uri string, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection, error) {
+	require := server.require
+
 	rc, ws := io.Pipe()
 	rs, wc := io.Pipe()
 
-	serverConn := amqp.NewConnection(rs, ws, ws)
-	go func() error {
-		serverConn.Do(ctx)
-		return nil
-	}()
+	var serverConn *amqp.Connection
+	if len(server.users) == 0 {
+		serverConn = amqp.NewConnection(rs, ws, ws)
+	} else {
+		serverConn = amqp.NewConnection(rs, ws, ws, amqp.WithAuth(amqp.NewSimpleAuth(server.users...)))
+	}
 
-	uri, err := rabbitmq.ParseURI("amqp://foo")
-	require.NoError(err)
+	go serverConn.Do(ctx)
+
+	amqpURI := require.rabbitmqURI(uri)
+
 	config := rabbitmq.Config{
 		Vhost:     "/",
-		Heartbeat: 1 * time.Second, // TODO: Test hearbeat negotiation.
-		SASL:      []rabbitmq.Authentication{uri.PlainAuth()},
+		Heartbeat: heartbeat,
+		SASL:      []rabbitmq.Authentication{amqpURI.PlainAuth()},
 	}
 	clientConn, err := rabbitmq.Open(readWriteCloser{rc, wc, wc}, config)
-	require.NoError(err)
+	if err != nil {
+		require.True(clientConn.IsClosed())
+		require.True(serverConn.IsDead())
+		return nil, nil, err
+	}
+
+	require.False(clientConn.IsClosed())
+	require.False(serverConn.IsDead())
 
 	// Automatically clean up.
 	go func() {
@@ -54,6 +95,11 @@ func (require *Assertions) OpenConnection(ctx context.Context, heartbeat time.Du
 		clientConn.Close()
 		serverConn.Close()
 	}()
+	return clientConn, serverConn, err
+}
 
-	return clientConn, serverConn
+func (require *Assertions) rabbitmqURI(uri string) rabbitmq.URI {
+	u, err := rabbitmq.ParseURI(uri)
+	require.NoError(err)
+	return u
 }

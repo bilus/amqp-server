@@ -13,7 +13,6 @@ import (
 
 	"github.com/lithammer/shortuuid/v4"
 	"github.com/valinurovam/garagemq/amqp"
-	"github.com/valinurovam/garagemq/auth"
 )
 
 // Connection implements the state machine for an AMQP connection.
@@ -25,6 +24,8 @@ type Connection struct {
 
 	dead          int32
 	declaredQueue string // Only one queue supported. Empty if not declared.
+
+	authStrategy AuthStrategy
 }
 
 const (
@@ -39,13 +40,26 @@ const (
 	controlChannelID = 0
 )
 
-func NewConnection(input io.Reader, output io.Writer, closer io.Closer) *Connection {
-	return &Connection{
+type option func(*Connection)
+
+func WithAuth(auth AuthStrategy) option {
+	return func(conn *Connection) {
+		conn.authStrategy = auth
+	}
+}
+
+func NewConnection(input io.Reader, output io.Writer, closer io.Closer, options ...option) *Connection {
+	conn := &Connection{
 		rawConn:           NewRawConnection(input, output, closer),
 		heartbeatInterval: defaultHeartbeatInterval,
 		maxChannels:       maxChannels,
 		maxFrameSize:      maxFrameSize,
+		authStrategy:      NoAuth{},
 	}
+	for _, opt := range options {
+		opt(conn)
+	}
+	return conn
 }
 
 func (conn *Connection) Do(ctx context.Context) {
@@ -152,25 +166,10 @@ func (conn *Connection) close() error {
 func (conn *Connection) handleStarting(ctx context.Context, channelID ChannelID, method amqp.Method) (Thunk, error) {
 	switch method := method.(type) {
 	case *amqp.ConnectionStartOk:
-
-		var saslData auth.SaslData
-		var err error
-		if saslData, err = auth.ParsePlain(method.Response); err != nil {
-			return nil, connectionError(amqp.NotAllowed, "login failure", method)
+		err := conn.authStrategy.Check(method)
+		if err != nil {
+			return nil, err
 		}
-		_ = saslData
-
-		if method.Mechanism != auth.SaslPlain {
-			conn.Close()
-		}
-
-		// if !channel.server.checkAuth(saslData) {
-		// 	return amqp.NewConnectionError(amqp.NotAllowed, "login failure", method.ClassIdentifier(), method.MethodIdentifier())
-		// }
-		// conn.userName = saslData.Username
-		// conn.clientProperties = method.ClientProperties
-
-		// @todo Send HeartBeat 0 cause not supported yet
 		err = conn.SendMethod(&amqp.ConnectionTune{
 			ChannelMax: maxChannels,
 			FrameMax:   maxFrameSize,
