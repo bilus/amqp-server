@@ -35,9 +35,20 @@ func New(t *testing.T) *Assertions {
 
 func (require *Assertions) OpenConnection(ctx context.Context, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection) {
 	server := require.AMQPServer(ctx)
-	clientConn, serverConn, err := server.Connect(ctx, "amqp://localhost/", heartbeat)
+	clientConn, serverConn, stop, err := server.Connect(ctx, "amqp://localhost/", heartbeat)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	require.NoError(err)
 	return clientConn, serverConn
+}
+
+func (require *Assertions) OpenConnection2(ctx context.Context, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection, func()) {
+	server := require.AMQPServer(ctx)
+	clientConn, serverConn, stop, err := server.Connect(ctx, "amqp://localhost/", heartbeat)
+	require.NoError(err)
+	return clientConn, serverConn, stop
 }
 
 func (require *Assertions) AMQPServer(ctx context.Context, credentials ...string) AMQPServer {
@@ -57,7 +68,7 @@ func (require *Assertions) AMQPServer(ctx context.Context, credentials ...string
 	}
 }
 
-func (server AMQPServer) Connect(ctx context.Context, uri string, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection, error) {
+func (server AMQPServer) Connect(ctx context.Context, uri string, heartbeat time.Duration) (*rabbitmq.Connection, *amqp.Connection, func(), error) {
 	require := server.require
 
 	rc, ws := io.Pipe()
@@ -83,23 +94,35 @@ func (server AMQPServer) Connect(ctx context.Context, uri string, heartbeat time
 	if err != nil {
 		require.True(clientConn.IsClosed())
 		require.True(serverConn.IsDead())
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	require.False(clientConn.IsClosed())
 	require.False(serverConn.IsDead())
 
 	// Automatically clean up.
-	go func() {
-		<-ctx.Done()
+	stop := func() {
+		ws.Close()
+		wc.Close()
+		rs.Close()
+		rc.Close()
 		clientConn.Close()
 		serverConn.Close()
-	}()
-	return clientConn, serverConn, err
+	}
+	return clientConn, serverConn, stop, err
 }
 
 func (require *Assertions) rabbitmqURI(uri string) rabbitmq.URI {
 	u, err := rabbitmq.ParseURI(uri)
 	require.NoError(err)
 	return u
+}
+
+func (require *Assertions) WithChannel(ctx context.Context, f func(ch *rabbitmq.Channel, clientConn *rabbitmq.Connection, serverConn *amqp.Connection)) {
+	// Slow heartbeat so it doesn't interfere with tests.
+	heartbeat := time.Second * 10
+	clientConn, serverConn := require.OpenConnection(ctx, heartbeat)
+	ch, err := clientConn.Channel()
+	require.NoError(err)
+	f(ch, clientConn, serverConn)
 }

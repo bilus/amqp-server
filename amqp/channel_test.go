@@ -75,9 +75,9 @@ func TestQueueDeclare_OnlyOnePerConnection(t *testing.T) {
 }
 
 func TestQueueDeclare_ValidConfigurations(t *testing.T) {
+	// log.SetLevel(log.DebugLevel)
+
 	req := require.New(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
 
 	testCases := []struct {
 		desc                                   string
@@ -126,9 +126,10 @@ func TestQueueDeclare_ValidConfigurations(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
 			require := require.New(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
 			clientConn, serverConn := req.OpenConnection(ctx, time.Millisecond*1)
-			defer clientConn.Close()
-			defer serverConn.Close()
 			ch1, _ := clientConn.Channel()
 
 			_, err := ch1.QueueDeclare(tc.queueName, tc.durable, tc.autoDelete, tc.exclusive, tc.noWait, nil)

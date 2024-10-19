@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/valinurovam/garagemq/amqp"
 )
 
@@ -105,7 +105,7 @@ func (conn *RawConnection) Flush() error {
 
 // SendMethod sends AMQP method to the client.
 func (conn *RawConnection) SendMethod(method amqp.Method, channelId uint16) error {
-	log.Printf("<= %s chan = %d", method.Name(), channelId)
+	log.Debugf("<= %s chan = %d", method.Name(), channelId)
 	// TODO(bilus): Use buffer pool (after benchmarking).
 	buffer := bytes.NewBuffer(make([]byte, 0, 0))
 	if err := amqp.WriteMethod(buffer, method, protoVersion); err != nil {
@@ -135,7 +135,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 	}
 	switch frame.Type {
 	case amqp.FrameHeartbeat:
-		log.Println("=> Heartbeat")
+		log.Debug("=> Heartbeat")
 		// TODO(bilus): Handle client heartbeat.
 		return conn.ReadFrame(ctx, handleMethod)
 	case amqp.FrameMethod:
@@ -146,7 +146,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 		buffer := bytes.NewReader([]byte{})
 		buffer.Reset(frame.Payload)
 		method, amqpErr := amqp.ReadMethod(buffer, protoVersion)
-		log.Printf("=> %s chan = %d", method.Name(), frame.ChannelID)
+		log.Debugf("=> %s chan = %d", method.Name(), frame.ChannelID)
 		if amqpErr != nil {
 			// TODO(bilus): It can either be a connection or channel error.
 			log.Printf("Error handling frame: %v", amqpErr)
@@ -170,7 +170,7 @@ func (conn *RawConnection) ReadFrame(ctx context.Context, handleMethod MethodHan
 
 // Heartbeat sends a heartbeat frame.
 func (conn *RawConnection) Heartbeat() error {
-	log.Println("<= Heartbeat")
+	log.Debug("<= Heartbeat")
 	heartbeatFrame := &amqp.Frame{Type: byte(amqp.FrameHeartbeat), ChannelID: 0, Payload: []byte{}, CloseAfter: false, Sync: true}
 	return conn.sendFrame(heartbeatFrame)
 }
@@ -184,17 +184,17 @@ func (conn *RawConnection) sendFrame(frame *amqp.Frame) error {
 	}
 	if frame.CloseAfter {
 		if err := conn.output.Flush(); err != nil && !conn.isClosedError(err) {
-			return fmt.Errorf("error writing frame: %w", err)
+			return fmt.Errorf("error flushing frame (CloseAfter): %w", err)
 		}
 		return ErrCloseAfter
 	}
 	if frame.Sync {
 		if err := conn.output.Flush(); err != nil && !conn.isClosedError(err) {
-			return fmt.Errorf("error writing frame: %w", err)
+			return fmt.Errorf("error flushing frame (Sync): %w", err)
 		}
 	} else {
 		if err := conn.maybeFlush(conn.output); err != nil && !conn.isClosedError(err) {
-			return fmt.Errorf("error writing frame: %w", err)
+			return fmt.Errorf("error flushing frame: %w", err)
 		}
 	}
 	atomic.StoreInt64(&conn.lastWriteUnixMilli, time.Now().UnixMilli())
@@ -214,6 +214,32 @@ func (conn *RawConnection) isClosedError(err error) bool {
 func (conn *RawConnection) maybeFlush(buffer *bufferedWriter) error {
 	if buffer.Buffered() >= flushThreshold {
 		return buffer.Flush()
+	}
+	return nil
+}
+
+// sendContent send message to consumers.
+func (conn *RawConnection) sendContent(method amqp.Method, header *amqp.ContentHeader, body []*amqp.Frame, channelID ChannelID) error {
+	if err := conn.SendMethod(method, channelID); err != nil {
+		return err
+	}
+
+	// TODO(bilus): Use buffer pool.
+	rawHeader := bytes.NewBuffer(make([]byte, 0, 0))
+	amqp.WriteContentHeader(rawHeader, header, protoVersion)
+
+	payload := make([]byte, rawHeader.Len())
+	copy(payload, rawHeader.Bytes())
+
+	if err := conn.sendFrame(&amqp.Frame{Type: byte(amqp.FrameHeader), ChannelID: channelID, Payload: payload, CloseAfter: false}); err != nil {
+		return err
+	}
+
+	for _, payload := range body {
+		payload.ChannelID = channelID
+		if err := conn.sendFrame(payload); err != nil {
+			return err
+		}
 	}
 	return nil
 }
